@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="https://github.com/Fede5/avd-deployment/raw/main/avd-banner.png" alt="Banner" />
+</p>
+
+
 # Azure Virtual Desktop Deployment Automation 🚀
 
 ![Azure](https://img.shields.io/badge/Azure-0078D4?logo=microsoftazure&logoColor=white)
