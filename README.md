@@ -19,17 +19,25 @@ This project automates the deployment of a complete **Azure Virtual Desktop (AVD
 
 ```
 📦 avd-deployment/
-├── main.bicep               # Entry point for AVD core infrastructure
-├── hostpool.bicep           # AVD Host Pool
-├── appgroup.bicep           # Application Group
-├── workspace.bicep          # Workspace
-├── loganalytics.bicep       # Log Analytics Workspace
-├── sessionhosts.bicep       # Deploys AVD session hosts
-├── vm-deploy-loop.bicep     # Iterates VM creation based on count
-├── InstallAvdAgent.ps1      # Script executed by session hosts
-├── azure-pipelines.yml      # Full CI/CD pipeline with Azure DevOps
-├── parameters.infra.dev.json # Infra parameters (DEV example)
-└── parameters.vms.dev.json   # Session Host parameters (DEV example)
+├── azure-pipelines.yml
+├── README.md
+│
+├── scripts/
+│   ├── InstallAvdAgent.ps1
+│   └── publish-appgroup.ps1
+│
+├── Parameters example/
+│   ├── parameters.infra.dev.json
+│   └── parameters.vms.dev.json
+│
+└── modules/
+    ├── main.bicep
+    ├── hostpool.bicep
+    ├── appgroup.bicep
+    ├── workspace.bicep
+    ├── loganalytics.bicep
+    ├── sessionhosts.bicep
+    └── vm-deploy-loop.bicep
 ```
 
 ---
