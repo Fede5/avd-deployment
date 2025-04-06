@@ -1,0 +1,47 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "prefix": {
+        "value": "avddev" // Ejemplo: Prefijo para entorno DEV
+      },
+      "environment": {
+        "value": "dev" // Entorno
+      },
+      "location": {
+        "value": "eastus" // Cambia a tu ubicación deseada
+      },
+      "commonTags": {
+        "value": { // Ejemplo de tags para DEV
+          "environment": "dev",
+          "project": "AVD Deployment avddev",
+          "owner": "DevTeam",
+          "costCenter": "Dev-123",
+          "applicationName": "AVD Core Infrastructure",
+          "creationDate": "2025-04-06", // Poner fecha actual o manejar dinámicamente
+          "automationTool": "AzureDevOps-Bicep-LocalTest"
+        }
+      },
+      "logAnalyticsWorkspaceName": {
+          "value": "avddev-loganalytics" // Nombre derivado
+      },
+      "hostPoolName": {
+          "value": "avddev-hp" // Nombre derivado
+      },
+      "applicationGroupName": {
+          "value": "avddev-dag" // Nombre derivado
+      },
+      "workspaceName": {
+          "value": "avddev-ws" // Nombre derivado
+      },
+      "hostPoolType": {
+        "value": "Pooled" // O "Personal"
+      },
+      "loadBalancerType": {
+        "value": "BreadthFirst" // O "DepthFirst"
+      },
+      "maxSessionLimit": {
+        "value": 5 // Ejemplo para DEV
+      }
+    }
+  }

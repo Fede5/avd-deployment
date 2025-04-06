@@ -1,0 +1,369 @@
+# azure-pipelines.yml
+
+trigger: none # Manual trigger
+
+variables:
+  # --- Configuración General ---
+  azureServiceConnection: 'TuAzureServiceConnection'
+  location: 'eastus'
+  locationShort: 'eus'
+  prefix: 'myavd'
+  environment: 'dev'
+  pipelineCreationDate: $[format('{0:yyyyMMddTHHmmssZ}', pipeline.startTime)] # Fecha para Tags
+
+  # --- Grupo de Recursos ---
+  resourceGroupName: 'rg-$(prefix)-$(environment)-$(locationShort)'
+
+  # --- Key Vault ---
+  keyVaultName: 'tu-kv-$(environment)' # ¡¡ACTUALIZA!!
+  domainJoinPasswordSecretName: 'avdDomainJoinPassword'
+  vmAdminPasswordSecretName: 'vmAdminPassword'
+  avdTokenSecretName: 'avd-$(prefix)-$(environment)-token'
+
+  # --- Infraestructura AVD ---
+  bicepInfraFilePath: 'avd-deployment/main.bicep'
+  hostPoolType: 'Pooled'
+  loadBalancerType: 'BreadthFirst'
+  maxSessionLimit: 10
+
+  # --- Session Hosts ---
+  bicepVmFilePath: 'avd-deployment/sessionhosts.bicep'
+  vmCount: 2
+  vmSize: 'Standard_D4s_v3' # Asegúrate que soporta AccelNet y TrustedLaunch
+  adminUsername: 'localadmin'
+  existingVnetName: 'vnet-corp-$(locationShort)'       # ¡¡ACTUALIZA!!
+  existingSubnetName: 'snet-avd-$(locationShort)'   # ¡¡ACTUALIZA!!
+  existingVnetResourceGroupName: 'rg-network-$(locationShort)' # ¡¡ACTUALIZA!!
+  domainToJoin: 'tu.dominio.com'                     # ¡¡ACTUALIZA!!
+  domainUsername: 'svc_domainjoin@tu.dominio.com'    # ¡¡ACTUALIZA!!
+  domainOuPath: 'OU=AVD,DC=tu,DC=dominio,DC=com'     # ¡¡ACTUALIZA!! (Opcional)
+  # Imagen de VM: Windows 11 22H2 AVD (Gen2/TrustedLaunch compatible)
+  vmImagePublisher: 'MicrosoftWindowsDesktop'
+  vmImageOffer: 'Windows-11'
+  vmImageSku: 'win11-24h2-avd' # Esta SKU suele ser Gen2 y compatible con Trusted Launch
+  vmImageVersion: 'latest'
+
+  # --- Tags - Mejores Prácticas ---
+  tagOwner: 'AVD-Admins' # ¡¡ACTUALIZA!! Equipo o persona responsable
+  tagCostCenter: 'IT-Shared-1234' # ¡¡ACTUALIZA!! Centro de costo
+  tagApplicationNameAVD: 'AVD Core Infrastructure'
+  tagApplicationNameVMs: 'AVD Session Hosts'
+  tagAutomationTool: 'AzureDevOps-Bicep'
+
+
+pool:
+  vmImage: 'ubuntu-latest' # *** Cambiado de vuelta a Ubuntu ***
+
+stages:
+# ========================================================================
+# STAGE 1: Desplegar Infraestructura AVD y Guardar Token en Key Vault
+# ========================================================================
+- stage: DeployAVDInfra
+  displayName: '1. Deploy AVD Infra & Store Token'
+  jobs:
+  - job: DeployInfra
+    displayName: 'Deploy AVD Core & Save Token'
+    steps:
+    - checkout: self
+      displayName: 'Checkout code'
+
+    # ----------------------------------------------------
+    # Paso 1.0: Instalar jq (si no está presente)
+    # ----------------------------------------------------
+    - script: |
+        sudo apt-get update
+        sudo apt-get install -y jq
+      displayName: 'Install jq (JSON processor)'
+      condition: succeeded() # Solo si el checkout fue exitoso
+
+    # ----------------------------------------------------
+    # Paso 1.1: Validar Bicep de Infra AVD (What-If)
+    # ----------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Validate AVD Infra Bicep (What-If)'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Validating AVD Infrastructure deployment in RG: $(resourceGroupName)"
+          # Construir JSON de Tags para validación
+          tagsJson=$(printf '{ "environment": "%s", "project": "AVD Deployment %s", "owner": "%s", "costCenter": "%s", "applicationName": "%s", "creationDate": "%s", "automationTool": "%s" }' \
+            "$(environment)" "$(prefix)" "$(tagOwner)" "$(tagCostCenter)" "$(tagApplicationNameAVD)" "$(pipelineCreationDate)" "$(tagAutomationTool)")
+
+          az deployment group what-if \
+            --resource-group $(resourceGroupName) \
+            --template-file $(bicepInfraFilePath) \
+            --parameters \
+              prefix=$(prefix) \
+              environment=$(environment) \
+              location=$(location) \
+              hostPoolType=$(hostPoolType) \
+              loadBalancerType=$(loadBalancerType) \
+              maxSessionLimit=$(maxSessionLimit) \
+              commonTags="$tagsJson" # Pasar tags como objeto JSON
+
+    # ----------------------------------------------------
+    # Paso 1.2: Desplegar Infraestructura AVD
+    # ----------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Deploy AVD Core Infrastructure with Bicep'
+      name: DeployAvdCoreTask
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Deploying AVD Infrastructure to RG: $(resourceGroupName)"
+          # Construir JSON de Tags para despliegue
+          tagsJson=$(printf '{ "environment": "%s", "project": "AVD Deployment %s", "owner": "%s", "costCenter": "%s", "applicationName": "%s", "creationDate": "%s", "automationTool": "%s" }' \
+            "$(environment)" "$(prefix)" "$(tagOwner)" "$(tagCostCenter)" "$(tagApplicationNameAVD)" "$(pipelineCreationDate)" "$(tagAutomationTool)")
+
+          deployment_output=$(az deployment group create \
+            --name 'avd-infra-deploy-$(Build.BuildId)' \
+            --resource-group $(resourceGroupName) \
+            --template-file $(bicepInfraFilePath) \
+            --parameters \
+              prefix=$(prefix) \
+              environment=$(environment) \
+              location=$(location) \
+              hostPoolType=$(hostPoolType) \
+              loadBalancerType=$(loadBalancerType) \
+              maxSessionLimit=$(maxSessionLimit) \
+              commonTags="$tagsJson" \
+            --output json)
+
+          # Extraer outputs usando jq
+          hostpool_name=$(echo $deployment_output | jq -r '.properties.outputs.deployedHostPoolName.value')
+          log_analytics_id=$(echo $deployment_output | jq -r '.properties.outputs.deployedLogAnalyticsWorkspaceId.value')
+          hostpool_id=$(echo $deployment_output | jq -r '.properties.outputs.deployedHostPoolId.value')
+
+          # Validar outputs
+          if [[ -z "$hostpool_name" || "$hostpool_name" == "null" ]]; then echo "##vso[task.logissue type=error]Could not determine Host Pool name."; exit 1; fi
+          if [[ -z "$log_analytics_id" || "$log_analytics_id" == "null" ]]; then echo "##vso[task.logissue type=error]Could not determine Log Analytics Workspace ID."; exit 1; fi
+          if [[ -z "$hostpool_id" || "$hostpool_id" == "null" ]]; then echo "##vso[task.logissue type=error]Could not determine Host Pool ID."; exit 1; fi
+
+          echo "Host Pool Name: $hostpool_name"
+          echo "Log Analytics Workspace ID: $log_analytics_id"
+          echo "Host Pool ID: $hostpool_id"
+
+          # Pasar variables a los siguientes pasos/jobs
+          echo "##vso[task.setvariable variable=hostPoolName;isOutput=true]$hostpool_name"
+          echo "##vso[task.setvariable variable=logAnalyticsWorkspaceId;isOutput=true]$log_analytics_id"
+          echo "##vso[task.setvariable variable=hostPoolId;isOutput=true]$hostpool_id"
+
+
+    # ----------------------------------------------------
+    # Paso 1.3: Obtener Token de Registro AVD
+    # ----------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Get AVD Host Pool Registration Token'
+      name: GetTokenTask
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          hostpool_name="$(DeployAvdCoreTask.hostPoolName)"
+          echo "Getting registration token for Host Pool: ${hostpool_name} in RG: $(resourceGroupName)"
+
+          # Calcular expiración (ej: 8 horas) usando 'date'
+          # expiration_date=$(date -u -d "+8 hours" '+%Y-%m-%dT%H:%M:%SZ') # Formato Z simple
+          # Formato ISO 8601 completo (más robusto)
+          expiration_date=$(date -u -d "+8 hours" --iso-8601=seconds)
+          # Azure CLI espera el formato con Z o con offset +/-HH:MM. El de arriba da +/-HH:MM
+          # Podemos convertirlo a Z si es necesario, o dejar que CLI lo maneje
+          echo "Token expiration set to: ${expiration_date}"
+
+          token_output=$(az desktopvirtualization hostpool registration-info update \
+            --resource-group "$(resourceGroupName)" \
+            --host-pool-name "${hostpool_name}" \
+            --expiration-time "${expiration_date}" \
+            --output json)
+
+          # Extraer token usando jq
+          registration_token=$(echo "$token_output" | jq -r '.token')
+
+          if [[ -z "$registration_token" || "$registration_token" == "null" ]]; then
+            echo "##vso[task.logissue type=error]Failed to retrieve registration token."
+            exit 1
+          else
+            echo "Successfully retrieved registration token."
+            # Pasa el token como variable secreta
+            echo "##vso[task.setvariable variable=avdRegistrationToken;isOutput=true;isSecret=true]$registration_token"
+          fi
+
+    # ----------------------------------------------------
+    # Paso 1.4: Guardar Token en Azure Key Vault
+    # ----------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Store AVD Registration Token in Key Vault'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        env:
+          REGISTRATION_TOKEN: $(GetTokenTask.avdRegistrationToken) # Mapea la variable secreta
+        inlineScript: |
+          echo "Storing registration token in Key Vault: $(keyVaultName), Secret Name: $(avdTokenSecretName)"
+          az keyvault secret set \
+            --vault-name "$(keyVaultName)" \
+            --name "$(avdTokenSecretName)" \
+            --value "$REGISTRATION_TOKEN"
+
+          if [ $? -eq 0 ]; then echo "Successfully stored token in Key Vault."; else echo "##vso[task.logissue type=error]Failed to store token in Key Vault."; exit 1; fi
+
+
+# ========================================================================
+# STAGE 2: Desplegar Session Hosts (VMs)
+# ========================================================================
+- stage: DeploySessionHosts
+  displayName: '2. Deploy Session Host VMs'
+  dependsOn: DeployAVDInfra
+  variables:
+    hostPoolName: $[ stageDependencies.DeployAVDInfra.DeployInfra.outputs['DeployAvdCoreTask.hostPoolName'] ]
+    logAnalyticsWorkspaceId: $[ stageDependencies.DeployAVDInfra.DeployInfra.outputs['DeployAvdCoreTask.logAnalyticsWorkspaceId'] ]
+    hostPoolId: $[ stageDependencies.DeployAVDInfra.DeployInfra.outputs['DeployAvdCoreTask.hostPoolId'] ]
+  jobs:
+  - job: DeployVMs
+    displayName: 'Deploy Session Host VMs'
+    steps:
+    - checkout: self
+      displayName: 'Checkout code'
+
+    # ----------------------------------------------------
+    # Paso 2.0: Instalar jq (si no está presente)
+    # ----------------------------------------------------
+    - script: |
+        sudo apt-get update
+        sudo apt-get install -y jq
+      displayName: 'Install jq (JSON processor)'
+      condition: succeeded()
+
+# ----------------------------------------------------
+    # Paso 2.1: Descargar Secretos desde Key Vault
+    # ----------------------------------------------------
+    - task: AzureKeyVault@2
+      displayName: 'Download Secrets from Azure Key Vault'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        KeyVaultName: $(keyVaultName)
+        SecretsFilter: '$(avdTokenSecretName),$(domainJoinPasswordSecretName),$(vmAdminPasswordSecretName)'
+        RunAsPreJob: false
+
+    # ----------------------------------------------------
+    # *** NUEVO PASO: Validar Secretos Descargados ***
+    # ----------------------------------------------------
+    - script: |
+        echo "Validating downloaded secrets..."
+        # Nota: Los nombres de variable aquí son los nombres de los secretos definidos en Key Vault
+        # y mapeados por la tarea AzureKeyVault@2. Adapta si tus nombres de secreto son diferentes.
+        # Para el token AVD, usamos la variable definida en el pipeline: avdTokenSecretName
+        # Para las contraseñas, usamos los nombres directos definidos en Key Vault y SecretsFilter.
+        token_secret_var_name=$(echo "$(avdTokenSecretName)" | sed 's/[^a-zA-Z0-9_]/_/g') # Sanitizar nombre para variable bash
+        domain_pw_secret_var_name=$(echo "$(domainJoinPasswordSecretName)" | sed 's/[^a-zA-Z0-9_]/_/g')
+        vm_admin_pw_secret_var_name=$(echo "$(vmAdminPasswordSecretName)" | sed 's/[^a-zA-Z0-9_]/_/g')
+
+        # Comprueba si las variables correspondientes existen y no están vacías
+        if [ -z "$(eval echo \$$token_secret_var_name)" ]; then
+          echo "##vso[task.logissue type=error]AVD Token secret ($token_secret_var_name / $(avdTokenSecretName)) was not downloaded from Key Vault or is empty."
+          exit 1
+        fi
+        if [ -z "$(eval echo \$$domain_pw_secret_var_name)" ]; then
+          echo "##vso[task.logissue type=error]Domain Join Password secret ($domain_pw_secret_var_name / $(domainJoinPasswordSecretName)) was not downloaded from Key Vault or is empty."
+          exit 1
+        fi
+        if [ -z "$(eval echo \$$vm_admin_pw_secret_var_name)" ]; then
+          echo "##vso[task.logissue type=error]VM Admin Password secret ($vm_admin_pw_secret_var_name / $(vmAdminPasswordSecretName)) was not downloaded from Key Vault or is empty."
+          exit 1
+        fi
+        echo "Secret validation passed."
+      displayName: 'Verify Secrets Downloaded'
+      condition: succeeded() # Solo ejecutar si la descarga de KV fue exitosa
+
+    # ----------------------------------------------------
+    # Paso 2.2: Validar Bicep de VMs (What-If) - Opcional
+    # ----------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Validate Session Hosts Bicep (What-If)'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Validating Session Host deployment in RG: $(resourceGroupName)"
+          # Construir JSON de Tags y de Imagen para validación
+          tagsJson=$(printf '{ "environment": "%s", "project": "AVD Session Host %s", "owner": "%s", "costCenter": "%s", "applicationName": "%s", "creationDate": "%s", "automationTool": "%s" }' \
+            "$(environment)" "$(prefix)" "$(tagOwner)" "$(tagCostCenter)" "$(tagApplicationNameVMs)" "$(pipelineCreationDate)" "$(tagAutomationTool)")
+          imageRefJson=$(printf '{ "publisher": "%s", "offer": "%s", "sku": "%s", "version": "%s" }' \
+            "$(vmImagePublisher)" "$(vmImageOffer)" "$(vmImageSku)" "$(vmImageVersion)")
+
+          # Usar valores dummy para secure params en What-If
+          az deployment group what-if \
+            --resource-group $(resourceGroupName) \
+            --template-file $(bicepVmFilePath) \
+            --parameters \
+              prefix='$(prefix)-vm' \
+              location=$(location) \
+              vmCount=$(vmCount) \
+              vmSize=$(vmSize) \
+              adminUsername=$(adminUsername) \
+              adminPassword='DummyPassword' \
+              existingVnetName=$(existingVnetName) \
+              existingSubnetName=$(existingSubnetName) \
+              existingVnetResourceGroupName=$(existingVnetResourceGroupName) \
+              domainToJoin=$(domainToJoin) \
+              domainUsername=$(domainUsername) \
+              domainPassword='DummyPassword' \
+              domainOuPath='$(domainOuPath)' \
+              hostpoolToken='DummyToken' \
+              hostPoolId='$(hostPoolId)' \
+              logAnalyticsWorkspaceId='$(logAnalyticsWorkspaceId)' \
+              tags="$tagsJson" \
+              imageReference="$imageRefJson" \
+            || echo "What-if validation might show warnings due to secure parameters. Continuing deployment..."
+
+
+    # ----------------------------------------------------
+    # Paso 2.3: Desplegar Session Hosts (VMs)
+    # ----------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Deploy Session Hosts with Bicep'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Deploying $(vmCount) Session Hosts to RG: $(resourceGroupName)"
+          # Construir JSON de Tags y de Imagen para despliegue
+          tagsJson=$(printf '{ "environment": "%s", "project": "AVD Session Host %s", "owner": "%s", "costCenter": "%s", "applicationName": "%s", "creationDate": "%s", "automationTool": "%s" }' \
+            "$(environment)" "$(prefix)" "$(tagOwner)" "$(tagCostCenter)" "$(tagApplicationNameVMs)" "$(pipelineCreationDate)" "$(tagAutomationTool)")
+          imageRefJson=$(printf '{ "publisher": "%s", "offer": "%s", "sku": "%s", "version": "%s" }' \
+            "$(vmImagePublisher)" "$(vmImageOffer)" "$(vmImageSku)" "$(vmImageVersion)")
+
+          az deployment group create \
+            --name 'avd-vms-deploy-$(Build.BuildId)' \
+            --resource-group $(resourceGroupName) \
+            --template-file $(bicepVmFilePath) \
+            --parameters \
+              prefix='$(prefix)-vm' \
+              location=$(location) \
+              vmCount=$(vmCount) \
+              vmSize=$(vmSize) \
+              adminUsername=$(adminUsername) \
+              adminPassword="$(vmAdminPassword)" \
+              existingVnetName=$(existingVnetName) \
+              existingSubnetName=$(existingSubnetName) \
+              existingVnetResourceGroupName=$(existingVnetResourceGroupName) \
+              domainToJoin=$(domainToJoin) \
+              domainUsername=$(domainUsername) \
+              domainPassword="$(domainJoinPassword)" \
+              domainOuPath='$(domainOuPath)' \
+              hostpoolToken="$(avdTokenSecretName)" \
+              hostPoolId='$(hostPoolId)' \
+              logAnalyticsWorkspaceId='$(logAnalyticsWorkspaceId)' \
+              tags="$tagsJson" \
+              imageReference="$imageRefJson" \
+              availabilitySetName='$(prefix)-vm-as'
+
+          if [ $? -eq 0 ]; then echo "Session Host deployment initiated successfully."; else echo "##vso[task.logissue type=error]Session Host deployment failed."; exit 1; fi

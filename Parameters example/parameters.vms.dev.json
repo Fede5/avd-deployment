@@ -1,0 +1,100 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "prefix": {
+        "value": "avddev-vm" // Prefijo para las VMs de DEV
+      },
+      "location": {
+        "value": "eastus" // Debe coincidir o ser compatible con la VNet
+      },
+      "vmCount": {
+        "value": 1 // Crear solo 1 VM para pruebas DEV
+      },
+      "vmSize": {
+        "value": "Standard_D2s_v3" // Tamaño más pequeño para DEV
+      },
+      "adminUsername": {
+        "value": "localdevadmin"
+      },
+      "adminPassword": {
+        // IMPORTANTE: Para pruebas locales, considera usar referencias a Key Vault
+        // O pasa este valor de forma segura a través de la línea de comandos.
+        // NO GUARDES contraseñas reales en este archivo.
+        "reference": {
+            "keyVault": {
+              "id": "/subscriptions/YOUR_SUB_ID/resourceGroups/YOUR_KV_RG/providers/Microsoft.KeyVault/vaults/yourDevKeyVaultName"
+             },
+            "secretName": "vmAdminPasswordDev" // Nombre del secreto en tu KV de DEV
+        }
+        // "value": "PLACEHOLDER_PASSWORD" // Alternativa insegura para estructura
+      },
+      "existingVnetName": {
+        "value": "vnet-dev-eus" // Nombre de tu VNet de DEV
+      },
+      "existingSubnetName": {
+        "value": "snet-avd-dev-eus" // Nombre de tu subred de DEV
+      },
+      "existingVnetResourceGroupName": {
+        "value": "rg-network-dev-eus" // RG de tu red de DEV
+      },
+      "domainToJoin": {
+        "value": "dev.contoso.com" // Tu dominio de DEV
+      },
+      "domainUsername": {
+        "value": "svc_dev_join@dev.contoso.com" // Usuario de unión para DEV
+      },
+      "domainPassword": {
+        // IMPORTANTE: Igual que adminPassword, usa KeyVault reference o pasa seguro.
+        "reference": {
+            "keyVault": {
+              "id": "/subscriptions/YOUR_SUB_ID/resourceGroups/YOUR_KV_RG/providers/Microsoft.KeyVault/vaults/yourDevKeyVaultName"
+             },
+            "secretName": "avdDomainJoinPasswordDev" // Nombre del secreto en tu KV de DEV
+        }
+        // "value": "PLACEHOLDER_PASSWORD" // Alternativa insegura
+      },
+      "domainOuPath": {
+        "value": "OU=AVD-Dev,DC=dev,DC=contoso,DC=com" // OU específica para DEV (opcional)
+      },
+      "hostpoolToken": {
+        // IMPORTANTE: El token se genera dinámicamente. Para pruebas locales,
+        // tendrías que generarlo manualmente con 'az ... registration-info update'
+        // y pasarlo aquí (inseguro) o vía línea de comandos.
+         "value": "PASTE_MANUALLY_GENERATED_TOKEN_FOR_LOCAL_TEST"
+      },
+      "hostPoolId": {
+          // Necesitas obtener el ID del Host Pool desplegado en DEV
+          "value": "/subscriptions/YOUR_SUB_ID/resourceGroups/rg-avddev-dev-eus/providers/Microsoft.DesktopVirtualization/hostPools/avddev-hp"
+      },
+      "logAnalyticsWorkspaceId": {
+           // Necesitas obtener el ID del LA Workspace desplegado en DEV
+          "value": "/subscriptions/YOUR_SUB_ID/resourceGroups/rg-avddev-dev-eus/providers/Microsoft.OperationalInsights/workspaces/avddev-loganalytics"
+      },
+      "imageReference": {
+        "value": {
+          "publisher": "MicrosoftWindowsDesktop",
+          "offer": "Windows-11",
+          "sku": "win11-24h2-avd", // O la SKU que estés probando
+          "version": "latest"
+        }
+      },
+      "osDiskType": {
+        "value": "StandardSSD_LRS"
+      },
+      "availabilitySetName": {
+        "value": "avddev-vm-as" // Nombre del AS para DEV
+      },
+      "tags": {
+          "value": { // Ejemplo de tags para VMs de DEV
+              "environment": "dev",
+              "project": "AVD Session Host avddev-vm",
+              "owner": "DevTeam",
+              "costCenter": "Dev-123",
+              "applicationName": "AVD Session Hosts",
+              "creationDate": "2025-04-06",
+              "automationTool": "AzureDevOps-Bicep-LocalTest"
+          }
+      }
+    }
+  }
